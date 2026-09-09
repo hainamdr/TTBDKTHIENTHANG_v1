@@ -219,6 +219,7 @@ function StudentPaymentCard({ student, bankInfo, formatVND }: StudentPaymentCard
     let pollInterval = setInterval(async () => {
       try {
         const res = await fetch(`/api/payment-status/${student.id}`);
+        if (!res.ok) return;
         const data = await res.json();
         if (data.paid) {
           setIsPaid(true);

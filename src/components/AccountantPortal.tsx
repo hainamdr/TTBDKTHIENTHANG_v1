@@ -83,14 +83,19 @@ export default function AccountantPortal({
   // Load config on mount
   useEffect(() => {
     fetch('/api/config')
-      .then((res) => res.json())
+      .then((res) => {
+        if (res.ok) return res.json();
+        return null;
+      })
       .then((data) => {
-        setConfig(data);
-        if (data.spreadsheetId && !spreadsheetId) {
-          onUpdateSpreadsheetId(data.spreadsheetId);
+        if (data) {
+          setConfig(data);
+          if (data.spreadsheetId && !spreadsheetId) {
+            onUpdateSpreadsheetId(data.spreadsheetId);
+          }
         }
       })
-      .catch((err) => console.error('Lỗi tải cấu hình:', err));
+      .catch((err) => console.log('Static host mode'));
   }, []);
 
   // Sync spreadsheetId local input when prop changes

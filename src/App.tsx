@@ -45,6 +45,7 @@ export default function App() {
     const checkVersion = async () => {
       try {
         const res = await fetch('/api/sheets-version');
+        if (!res.ok) return;
         const data = await res.json();
         if (currentVersion !== null && data.version > currentVersion) {
           console.log(`[Sync] Google Sheet changed. Auto-refreshing student data! Old: ${currentVersion}, New: ${data.version}`);
@@ -52,7 +53,7 @@ export default function App() {
         }
         setCurrentVersion(data.version);
       } catch (e) {
-        console.error('Error polling sheets version:', e);
+        // Quiet on static hosts
       }
     };
 
@@ -121,30 +122,46 @@ export default function App() {
     { id: 'TX1002', studentId: 'K07HS00146', studentName: 'PHẠM ĐAN NGUYÊN', amount: 400000, content: 'HP K07HS00146 đóng học phí tháng 9', timestamp: '07/09/2026, 16:52:44', status: 'Thành công', gateway: 'SePay' }
   ];
 
-  // Fetch initial configurations from local Express server
+  // Fetch initial configurations from local Express server (or localStorage fallback on GitHub Pages)
   const loadConfigAndLocalTransactions = async () => {
     try {
       const res = await fetch('/api/config');
-      const data = await res.json();
-      if (data.spreadsheetId) {
-        setSpreadsheetId(data.spreadsheetId);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.spreadsheetId) {
+          setSpreadsheetId(data.spreadsheetId);
+        }
+        setBankInfo({
+          bankName: data.bankName || 'MBBank',
+          bankAccount: data.bankAccount || '123456789',
+          accountHolder: data.accountHolder || 'NGUYEN VAN A'
+        });
+      } else {
+        // Fallback for static host like GitHub Pages
+        const saved = localStorage.getItem('hienthang_config');
+        if (saved) {
+          try {
+            const data = JSON.parse(saved);
+            if (data.spreadsheetId) setSpreadsheetId(data.spreadsheetId);
+            if (data.bankName) setBankInfo(data);
+          } catch (e) {}
+        }
       }
-      setBankInfo({
-        bankName: data.bankName || 'MBBank',
-        bankAccount: data.bankAccount || '123456789',
-        accountHolder: data.accountHolder || 'NGUYEN VAN A'
-      });
 
       // Load local transactions logged via webhook
       const txRes = await fetch('/api/transactions');
-      const txData = await txRes.json();
-      if (txData && txData.length > 0) {
-        setTransactions(txData);
+      if (txRes.ok) {
+        const txData = await txRes.json();
+        if (txData && txData.length > 0) {
+          setTransactions(txData);
+        } else {
+          setTransactions(sampleFallbackTransactions);
+        }
       } else {
         setTransactions(sampleFallbackTransactions);
       }
     } catch (e) {
-      console.error('Error loading config:', e);
+      setTransactions(sampleFallbackTransactions);
     }
   };
 
@@ -174,8 +191,13 @@ export default function App() {
       const sheetTxs = await fetchTransactionsFromSheet(token, sheetId);
       
       // 3. Fetch Local Transactions from Server Webhook
-      const localTxsRes = await fetch('/api/transactions');
-      const localTxs: Transaction[] = await localTxsRes.json();
+      let localTxs: Transaction[] = [];
+      try {
+        const localTxsRes = await fetch('/api/transactions');
+        if (localTxsRes.ok) {
+          localTxs = await localTxsRes.json();
+        }
+      } catch (e) {}
 
       // Merge transactions (Sheet transactions + Local webhooks unique transactions)
       const mergedTxs = [...localTxs];
