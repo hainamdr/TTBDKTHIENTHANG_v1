@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   User as FirebaseUser 
 } from 'firebase/auth';
@@ -19,8 +19,8 @@ export default function App() {
   // Roles and Auth state
   const [role, setRole] = useState<UserRole>('parent');
   const [user, setUser] = useState<FirebaseUser | null>(null);
-  const [accessToken, setAccessToken] = useState<string | null>(null);
-  const [needsAuth, setNeedsAuth] = useState(true);
+  const [accessToken, setAccessToken] = useState<string | null>(() => getAccessToken());
+  const [needsAuth, setNeedsAuth] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
   // Business state
@@ -36,8 +36,14 @@ export default function App() {
     accountHolder: 'NGUYEN VAN A'
   });
 
+  // Stable refs to prevent effect re-trigger loops
+  const spreadsheetIdRef = useRef(spreadsheetId);
+  const accessTokenRef = useRef(accessToken);
+  spreadsheetIdRef.current = spreadsheetId;
+  accessTokenRef.current = accessToken;
+
   // Poll sheets version from server for real-time google sheet edits auto-update
-  const [currentVersion, setCurrentVersion] = useState<number | null>(null);
+  const versionRef = useRef<number | null>(null);
 
   useEffect(() => {
     let intervalId: any;
@@ -47,11 +53,11 @@ export default function App() {
         const res = await fetch('/api/sheets-version');
         if (!res.ok) return;
         const data = await res.json();
-        if (currentVersion !== null && data.version > currentVersion) {
-          console.log(`[Sync] Google Sheet changed. Auto-refreshing student data! Old: ${currentVersion}, New: ${data.version}`);
-          await refreshData(accessToken, spreadsheetId);
+        if (versionRef.current !== null && data.version > versionRef.current) {
+          console.log(`[Sync] Google Sheet changed. Auto-refreshing student data! Old: ${versionRef.current}, New: ${data.version}`);
+          await refreshData(accessTokenRef.current, spreadsheetIdRef.current);
         }
-        setCurrentVersion(data.version);
+        versionRef.current = data.version;
       } catch (e) {
         // Quiet on static hosts
       }
@@ -60,13 +66,13 @@ export default function App() {
     // Initialize version
     checkVersion();
 
-    // Poll every 5 seconds
-    intervalId = setInterval(checkVersion, 5000);
+    // Poll every 10 seconds
+    intervalId = setInterval(checkVersion, 10000);
 
     return () => {
       if (intervalId) clearInterval(intervalId);
     };
-  }, [currentVersion, accessToken, spreadsheetId]);
+  }, []);
 
   // Default sample data used as fallback if Google Sheet is not yet connected or configured
   const sampleFallbackStudents: Student[] = [
@@ -168,7 +174,18 @@ export default function App() {
   // Sync data with Google Sheets
   const refreshData = async (token = accessToken, sheetId = spreadsheetId) => {
     if (!token || !sheetId) {
-      // Fallback to sample data if offline / not connected
+      // Fallback to locally persisted students or sample data if offline
+      const localSaved = localStorage.getItem('hienthang_local_students');
+      if (localSaved) {
+        try {
+          const parsed = JSON.parse(localSaved);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setStudents(parsed);
+            await loadConfigAndLocalTransactions();
+            return;
+          }
+        } catch (e) {}
+      }
       setStudents(sampleFallbackStudents);
       await loadConfigAndLocalTransactions();
       return;
@@ -232,25 +249,27 @@ export default function App() {
 
   // Initialize Auth state on mount
   useEffect(() => {
-    loadConfigAndLocalTransactions().then(() => {
-      initAuth(
-        async (firebaseUser, token) => {
-          setUser(firebaseUser);
-          setAccessToken(token);
-          setNeedsAuth(false);
-          // Sync with Sheet once logged in
-          await refreshData(token, spreadsheetId);
-        },
-        () => {
-          setUser(null);
-          setAccessToken(null);
-          setNeedsAuth(true);
-          // Sync fallback offline data
-          refreshData(null, '');
-        }
-      );
-    });
-  }, [spreadsheetId]);
+    loadConfigAndLocalTransactions();
+
+    const unsubscribe = initAuth(
+      async (firebaseUser, token) => {
+        setUser(firebaseUser);
+        setAccessToken(token);
+        // Sync with Sheet once logged in
+        await refreshData(token, spreadsheetIdRef.current);
+      },
+      () => {
+        setUser(null);
+        setAccessToken(null);
+      }
+    );
+
+    return () => {
+      if (typeof unsubscribe === 'function') {
+        unsubscribe();
+      }
+    };
+  }, []);
 
   // Handle Google Login action
   const handleLogin = async () => {
@@ -260,11 +279,18 @@ export default function App() {
       if (result) {
         setUser(result.user);
         setAccessToken(result.accessToken);
-        setNeedsAuth(false);
-        await refreshData(result.accessToken, spreadsheetId);
+        await refreshData(result.accessToken, spreadsheetIdRef.current);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Login failed:', err);
+      if (err?.code === 'auth/unauthorized-domain') {
+        alert(
+          'Lưu ý tên miền: Tên miền hiện tại (GitHub Pages) chưa được thêm vào Authorized Domains trên Firebase Console.\n\n' +
+          'Bạn vẫn có thể sử dụng toàn bộ tính năng quản trị, xuất file Excel và mô phỏng SePay trực tiếp ngay tại đây!'
+        );
+      } else if (err?.code !== 'auth/popup-closed-by-user') {
+        alert(`Không thể đăng nhập Google: ${err?.message || err}`);
+      }
     } finally {
       setIsLoggingIn(false);
     }
@@ -272,15 +298,13 @@ export default function App() {
 
   // Handle Google Logout action
   const handleLogout = async () => {
-    const confirmLogout = window.confirm('Bạn có chắc chắn muốn đăng xuất tài khoản kế toán?');
+    const confirmLogout = window.confirm('Bạn có chắc chắn muốn đăng xuất tài khoản Google?');
     if (!confirmLogout) return;
 
     try {
       await logoutUser();
       setUser(null);
       setAccessToken(null);
-      setNeedsAuth(true);
-      setRole('parent'); // Switch parent view on log out
       await refreshData(null, '');
     } catch (err) {
       console.error('Logout failed:', err);
@@ -402,82 +426,20 @@ export default function App() {
         {role === 'parent' ? (
           <ParentPortal students={students} bankInfo={bankInfo} />
         ) : (
-          /* Accountant portal guard */
-          needsAuth ? (
-            <div id="auth-gate-splash" className="max-w-xl mx-auto px-4 py-20 text-center flex flex-col items-center gap-6">
-              <div className="w-20 h-20 bg-slate-100 text-slate-800 rounded-full flex items-center justify-center shadow-inner relative overflow-hidden">
-                <ShieldAlert className="w-10 h-10" />
-                <Sparkles className="w-4 h-4 text-emerald-500 absolute top-4 right-4 animate-bounce" />
-              </div>
-
-              <div>
-                <span className="bg-slate-100 text-slate-600 text-xs font-bold px-3 py-1.5 rounded-full uppercase tracking-wider">
-                  Bảo mật quản trị viên
-                </span>
-                <h1 className="text-2xl font-black mt-3 text-slate-950 tracking-tight">Cổng Kiểm Soát Đối Chiếu Học Phí</h1>
-                <p className="text-slate-500 text-sm mt-2 max-w-sm mx-auto">
-                  Vui lòng đăng nhập bằng Tài khoản Google được phân quyền kế toán để liên kết tệp Google Sheets, xuất báo cáo tài chính, và lưu lịch sử an toàn.
-                </p>
-              </div>
-
-              <button
-                onClick={handleLogin}
-                disabled={isLoggingIn}
-                className="gsi-material-button font-semibold text-sm w-full py-4.5"
-                style={{
-                  background: 'white',
-                  border: '1px solid #dadce0',
-                  borderRadius: '16px',
-                  color: '#3c4043',
-                  cursor: 'pointer',
-                  fontFamily: 'Roboto, arial, sans-serif',
-                  letterSpacing: '0.25px',
-                  outline: 'none',
-                  overflow: 'hidden',
-                  padding: '12px 24px',
-                  position: 'relative',
-                  textAlign: 'center',
-                  verticalAlign: 'middle',
-                  whiteSpace: 'nowrap',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: '12px',
-                  fontWeight: 600,
-                  boxShadow: '0 2px 4px 0 rgba(60,64,67,0.2), 0 1px 3px 1px rgba(60,64,67,0.1)'
-                }}
-              >
-                <div className="gsi-material-button-icon" style={{ height: '24px', width: '24px', display: 'flex', alignItems: 'center' }}>
-                  <svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" style={{ display: 'block' }}>
-                    <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"></path>
-                    <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"></path>
-                    <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"></path>
-                    <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"></path>
-                    <path fill="none" d="M0 0h48v48H0z"></path>
-                  </svg>
-                </div>
-                <span>Đăng nhập qua tài khoản Google</span>
-              </button>
-
-              <div className="border-t border-slate-200 pt-5 w-full mt-4 flex items-center justify-center gap-6 text-xs text-slate-400 font-semibold">
-                <span className="flex items-center gap-1"><Database className="w-4 h-4" /> Google Sheets DB</span>
-                <span className="flex items-center gap-1"><Users className="w-4 h-4" /> Phân quyền quản trị</span>
-              </div>
-            </div>
-          ) : (
-            <AccountantPortal
-              accessToken={accessToken}
-              spreadsheetId={spreadsheetId}
-              onUpdateSpreadsheetId={(id) => {
-                setSpreadsheetId(id);
-                refreshData(accessToken, id);
-              }}
-              students={students}
-              transactions={transactions}
-              onRefreshData={() => refreshData(accessToken, spreadsheetId)}
-              bankInfo={bankInfo}
-            />
-          )
+          <AccountantPortal
+            accessToken={accessToken}
+            spreadsheetId={spreadsheetId}
+            onUpdateSpreadsheetId={(id) => {
+              setSpreadsheetId(id);
+              refreshData(accessToken, id);
+            }}
+            students={students}
+            transactions={transactions}
+            onRefreshData={() => refreshData(accessToken, spreadsheetId)}
+            bankInfo={bankInfo}
+            user={user}
+            onLoginGoogle={handleLogin}
+          />
         )}
       </main>
 

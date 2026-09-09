@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Database, RefreshCw, Plus, Users, DollarSign, AlertCircle, TrendingUp, CheckCircle,
-  FileSpreadsheet, Image as ImageIcon, Settings, Bell, Zap, Trash2, Search, Filter, Play
+  FileSpreadsheet, Image as ImageIcon, Settings, Bell, Zap, Trash2, Search, Filter, Play, LogIn
 } from 'lucide-react';
 import { Student, Transaction, AppConfig, RevenueReport } from '../types';
 import { 
@@ -22,6 +22,8 @@ interface AccountantPortalProps {
     bankAccount: string;
     accountHolder: string;
   };
+  user?: any;
+  onLoginGoogle?: () => void;
 }
 
 export default function AccountantPortal({
@@ -31,7 +33,9 @@ export default function AccountantPortal({
   students,
   transactions,
   onRefreshData,
-  bankInfo
+  bankInfo,
+  user,
+  onLoginGoogle
 }: AccountantPortalProps) {
   // Config state
   const [config, setConfig] = useState<AppConfig>({
@@ -233,85 +237,102 @@ export default function AccountantPortal({
 
   // Toggle Single Student Status directly in table
   const handleToggleStatus = async (studentId: string, currentStatus: 'Đã nộp' | 'Chưa nộp', index: number) => {
-    if (!accessToken) {
-      alert('Vui lòng Đăng nhập tài khoản Google để chỉnh sửa học bạ!');
-      return;
-    }
-
     const nextStatus = currentStatus === 'Đã nộp' ? 'Chưa nộp' : 'Đã nộp';
     const confirmed = window.confirm(
       `Xác nhận thay đổi trạng thái học phí của học sinh có mã ${studentId} sang "${nextStatus}"?`
     );
     if (!confirmed) return;
 
-    setIsRefreshing(true);
-    try {
-      const success = await updateStudentStatusInSheet(accessToken, spreadsheetId, index, nextStatus);
-      if (success) {
-        await onRefreshData();
-      } else {
-        alert('Cập nhật trạng thái lên Google Sheet thất bại!');
+    if (accessToken && spreadsheetId) {
+      setIsRefreshing(true);
+      try {
+        const success = await updateStudentStatusInSheet(accessToken, spreadsheetId, index, nextStatus);
+        if (success) {
+          await onRefreshData();
+          return;
+        }
+      } catch (e: any) {
+        console.warn('Lỗi ghi Google Sheet, lưu trạng thái cục bộ:', e);
+      } finally {
+        setIsRefreshing(false);
       }
-    } catch (e: any) {
-      alert(`Lỗi: ${e.message}`);
-    } finally {
-      setIsRefreshing(false);
     }
+
+    // Local fallback persistence
+    const currentList = students.map((s) => s.id === studentId ? { ...s, status: nextStatus as 'Đã nộp' | 'Chưa nộp' } : s);
+    localStorage.setItem('hienthang_local_students', JSON.stringify(currentList));
+    await onRefreshData();
   };
 
   // Add new student
   const handleAddStudentSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!accessToken) {
-      alert('Vui lòng Đăng nhập tài khoản Google trước!');
-      return;
-    }
 
     if (!newStudent.id || !newStudent.name || !newStudent.className || !newStudent.tuition) {
       alert('Vui lòng điền đầy đủ các thông tin bắt buộc (*)');
       return;
     }
 
-    setIsRefreshing(true);
-    try {
-      const s: Student = {
-        id: newStudent.id,
-        name: newStudent.name,
-        grade: newStudent.grade || 'Khối 1',
-        className: newStudent.className,
-        teacher: newStudent.teacher || '',
-        tuition: Number(newStudent.tuition),
-        status: newStudent.status as 'Đã nộp' | 'Chưa nộp',
-        month: newStudent.month || '09/2026',
-        parentPhone: newStudent.parentPhone || '',
-        deadline: newStudent.deadline || '',
-      };
+    const s: Student = {
+      id: newStudent.id,
+      name: newStudent.name,
+      grade: newStudent.grade || 'Khối 1',
+      className: newStudent.className,
+      teacher: newStudent.teacher || '',
+      tuition: Number(newStudent.tuition),
+      status: newStudent.status as 'Đã nộp' | 'Chưa nộp',
+      month: newStudent.month || '09/2026',
+      parentPhone: newStudent.parentPhone || '',
+      deadline: newStudent.deadline || '',
+    };
 
-      const success = await addStudentToSheet(accessToken, spreadsheetId, s);
-      if (success) {
-        setShowAddStudent(false);
-        setNewStudent({
-          id: '',
-          name: '',
-          grade: 'Khối 1',
-          className: '',
-          teacher: '',
-          tuition: 1500000,
-          status: 'Chưa nộp',
-          month: '09/2026',
-          parentPhone: '',
-          deadline: '15/09/2026'
-        });
-        await onRefreshData();
-        alert('Đã thêm học sinh mới thành công!');
-      } else {
-        alert('Không thể ghi học sinh mới lên Google Sheet');
+    if (accessToken && spreadsheetId) {
+      setIsRefreshing(true);
+      try {
+        const success = await addStudentToSheet(accessToken, spreadsheetId, s);
+        if (success) {
+          setShowAddStudent(false);
+          setNewStudent({
+            id: '',
+            name: '',
+            grade: 'Khối 1',
+            className: '',
+            teacher: '',
+            tuition: 1500000,
+            status: 'Chưa nộp',
+            month: '09/2026',
+            parentPhone: '',
+            deadline: '15/09/2026'
+          });
+          await onRefreshData();
+          alert('Đã thêm học sinh mới thành công lên Google Sheet!');
+          return;
+        }
+      } catch (err: any) {
+        console.warn('Google Sheet ghi lỗi, lưu cục bộ:', err);
+      } finally {
+        setIsRefreshing(false);
       }
-    } catch (err: any) {
-      alert(`Lỗi: ${err.message}`);
-    } finally {
-      setIsRefreshing(false);
     }
+
+    // Local fallback persistence
+    const currentList = [...students, s];
+    localStorage.setItem('hienthang_local_students', JSON.stringify(currentList));
+    setShowAddStudent(false);
+    setNewStudent({
+      id: '',
+      name: '',
+      grade: 'Khối 1',
+      className: '',
+      teacher: '',
+      tuition: 1500000,
+      status: 'Chưa nộp',
+      month: '09/2026',
+      parentPhone: '',
+      deadline: '15/09/2026'
+    });
+    await onRefreshData();
+    alert('Đã thêm học sinh mới vào danh sách thành công!');
   };
 
   // Simulate payment callback
@@ -595,57 +616,79 @@ export default function AccountantPortal({
   return (
     <div id="accountant-portal-container" className="max-w-7xl mx-auto px-4 py-8">
       {/* Upper Sheets Connection Bar */}
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-6 mb-8 flex flex-col md:flex-row md:items-center justify-between gap-6">
-        <div className="flex items-center gap-4">
-          <div className="bg-emerald-50 text-emerald-600 p-3 rounded-xl">
-            <Database className="w-6 h-6" />
+      <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-6 mb-8 flex flex-col gap-5">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="flex items-center gap-4">
+            <div className={`p-3 rounded-xl ${accessToken ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>
+              <Database className="w-6 h-6" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-base font-bold text-slate-800">Cơ sở dữ liệu Học Phí & Google Sheets</h2>
+                {accessToken ? (
+                  <span className="inline-flex items-center gap-1 text-[11px] font-bold bg-emerald-100 text-emerald-800 px-2.5 py-0.5 rounded-full">
+                    <CheckCircle className="w-3.5 h-3.5" /> Đã kết nối Google Sheets
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 text-[11px] font-bold bg-amber-100 text-amber-800 px-2.5 py-0.5 rounded-full">
+                    Chế độ Quản trị Nội bộ / Excel
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-slate-500 mt-1">
+                {spreadsheetId ? `Mã Sheet liên kết: ${spreadsheetId}` : 'Mã Sheet mặc định: 1ll_BksTMMx1Rqes_2h50VlLxng-XFTsdCsG9g8UUBOs'}
+              </p>
+            </div>
           </div>
-          <div>
-            <h2 className="text-base font-bold text-slate-800">Cơ sở dữ liệu Google Sheets</h2>
-            <p className="text-xs text-slate-500 mt-0.5">
-              {spreadsheetId ? `Mã liên kết: ${spreadsheetId}` : 'Chưa liên kết cơ sở dữ liệu'}
-            </p>
+
+          <div className="flex items-center gap-3">
+            {!accessToken && onLoginGoogle && (
+              <button
+                onClick={onLoginGoogle}
+                className="bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 font-semibold text-xs px-3.5 py-2.5 rounded-xl transition flex items-center gap-2 shadow-xs"
+              >
+                <LogIn className="w-4 h-4 text-emerald-600" />
+                Đăng nhập Google Kế toán
+              </button>
+            )}
+            <button
+              onClick={handleCreateNewSheet}
+              disabled={isProvisioningSheet}
+              className="bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-700 font-bold text-xs px-3.5 py-2.5 rounded-xl transition flex items-center gap-1.5"
+            >
+              {isProvisioningSheet ? (
+                <RefreshCw className="w-4 h-4 animate-spin" />
+              ) : (
+                <Plus className="w-4 h-4" />
+              )}
+              Tạo Google Sheet mới
+            </button>
+
+            <button
+              onClick={handleManualRefresh}
+              disabled={isRefreshing}
+              className="border border-slate-200 hover:bg-slate-50 text-slate-700 p-2.5 rounded-xl transition"
+              title="Đồng bộ lại dữ liệu"
+            >
+              <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+            </button>
           </div>
         </div>
 
-        <div className="flex flex-1 max-w-lg items-center gap-2">
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 pt-2 border-t border-slate-100">
           <input
             type="text"
-            placeholder="Dán ID Google Sheet hoặc link vào đây..."
-            className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/20 text-slate-700"
+            placeholder="Dán ID Google Sheet hoặc link vào đây (Ví dụ: 1ll_BksTMMx1Rqes_2h50VlLxng-XFTsdCsG9g8UUBOs)..."
+            className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/20 text-slate-700 font-mono"
             value={sheetIdInput}
             onChange={(e) => setSheetIdInput(e.target.value)}
           />
           <button
             onClick={() => handleSaveSheetId()}
             disabled={isSavingConfig}
-            className="bg-slate-800 hover:bg-slate-900 text-white font-semibold text-xs px-4 py-3 rounded-xl transition"
+            className="bg-slate-800 hover:bg-slate-900 text-white font-semibold text-xs px-5 py-2.5 rounded-xl transition shadow-xs whitespace-nowrap"
           >
-            Lưu liên kết
-          </button>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <button
-            onClick={handleCreateNewSheet}
-            disabled={isProvisioningSheet}
-            className="bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-700 font-bold text-xs px-4 py-3 rounded-xl transition flex items-center gap-1.5"
-          >
-            {isProvisioningSheet ? (
-              <RefreshCw className="w-4 h-4 animate-spin" />
-            ) : (
-              <Plus className="w-4 h-4" />
-            )}
-            Tạo Google Sheet mới
-          </button>
-
-          <button
-            onClick={handleManualRefresh}
-            disabled={isRefreshing}
-            className="border border-slate-200 hover:bg-slate-50 text-slate-700 p-3 rounded-xl transition"
-            title="Đồng bộ dữ liệu"
-          >
-            <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+            Lưu liên kết Sheet
           </button>
         </div>
       </div>

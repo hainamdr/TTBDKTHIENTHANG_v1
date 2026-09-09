@@ -11,8 +11,10 @@ provider.addScope('https://www.googleapis.com/auth/spreadsheets');
 provider.addScope('https://www.googleapis.com/auth/userinfo.email');
 provider.addScope('https://www.googleapis.com/auth/userinfo.profile');
 
+const TOKEN_STORAGE_KEY = 'hienthang_google_oauth_token';
+
 let isSigningIn = false;
-let cachedAccessToken: string | null = null;
+let cachedAccessToken: string | null = (typeof window !== 'undefined' ? sessionStorage.getItem(TOKEN_STORAGE_KEY) : null);
 
 // Initialize auth state listener
 export const initAuth = (
@@ -20,19 +22,23 @@ export const initAuth = (
   onAuthFailure?: () => void
 ) => {
   return onAuthStateChanged(auth, async (user: User | null) => {
+    // If sign-in is actively in progress via popup, let the popup handler complete first
+    if (isSigningIn) return;
+
     if (user) {
-      // In a real OAuth setup, if cachedAccessToken is lost (e.g. after a page reload),
-      // we can try to re-authenticate or ask the user to sign in again to retrieve the token,
-      // or retrieve it if cached.
-      if (cachedAccessToken) {
-        if (onAuthSuccess) onAuthSuccess(user, cachedAccessToken);
+      const storedToken = cachedAccessToken || (typeof window !== 'undefined' ? sessionStorage.getItem(TOKEN_STORAGE_KEY) : null);
+      if (storedToken) {
+        cachedAccessToken = storedToken;
+        if (onAuthSuccess) onAuthSuccess(user, storedToken);
       } else {
-        // If user is logged in but token is not in memory (page reload),
-        // we can set a flag and request re-auth or wait for manual sign-in to get token.
+        // User logged in to Firebase but token expired/lost
         if (onAuthFailure) onAuthFailure();
       }
     } else {
       cachedAccessToken = null;
+      if (typeof window !== 'undefined') {
+        sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+      }
       if (onAuthFailure) onAuthFailure();
     }
   });
@@ -48,6 +54,9 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
       throw new Error('Không thể lấy mã truy cập Google OAuth');
     }
     cachedAccessToken = credential.accessToken;
+    if (typeof window !== 'undefined') {
+      sessionStorage.setItem(TOKEN_STORAGE_KEY, cachedAccessToken);
+    }
     return { user: result.user, accessToken: cachedAccessToken };
   } catch (error: any) {
     console.error('Lỗi đăng nhập Google OAuth:', error);
@@ -59,16 +68,26 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
 
 // Get the current access token
 export const getAccessToken = (): string | null => {
-  return cachedAccessToken;
+  return cachedAccessToken || (typeof window !== 'undefined' ? sessionStorage.getItem(TOKEN_STORAGE_KEY) : null);
 };
 
 // Set token manually (useful when syncing from callbacks or local sessions)
 export const setAccessToken = (token: string) => {
   cachedAccessToken = token;
+  if (typeof window !== 'undefined') {
+    sessionStorage.setItem(TOKEN_STORAGE_KEY, token);
+  }
 };
 
 // Sign out
 export const logoutUser = async () => {
-  await signOut(auth);
+  try {
+    await signOut(auth);
+  } catch (e) {
+    console.warn('Signout error:', e);
+  }
   cachedAccessToken = null;
+  if (typeof window !== 'undefined') {
+    sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+  }
 };
