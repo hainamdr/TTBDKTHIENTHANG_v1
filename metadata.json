@@ -1,0 +1,6 @@
+{
+  "name": "Tuition & SePay Payment Manager",
+  "description": "Hệ thống quản lý học phí tích hợp cơ sở dữ liệu Google Sheets, thanh toán QR nhanh SePay, xác nhận tự động, và thông báo Telegram/Zalo cho kế toán.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

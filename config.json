@@ -1,0 +1,11 @@
+{
+  "spreadsheetId": "1ll_BksTMMx1Rqes_2h50VlLxng-XFTsdCsG9g8UUBOs",
+  "bankName": "MBBank",
+  "bankAccount": "123456789",
+  "accountHolder": "NGUYEN VAN A",
+  "sepayApiKey": "",
+  "sepayWebhookSecret": "sepay_secret_token_123",
+  "telegramBotToken": "",
+  "telegramChatId": "",
+  "zaloWebhookUrl": ""
+}
